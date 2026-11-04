@@ -78,10 +78,14 @@ export async function generateHeuristicCandidate(semesterId: string, sectionIds?
     prisma.timetableSession.findMany({ where: { semesterId }, include: { sections: true } }),
   ]);
   const subjects = await prisma.subject.findMany({ where: { semesterId } });
+  const sectionSubjects = await prisma.sectionSubject.findMany({ where: { sectionId: { in: targetSections.map(section => section.id) } }, include: { subject: true } });
   const existing = existingRows.map(asSession); const sessions: TimetableSession[] = [];
   const slots = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00"];
   const days = context.workingDays;
-  for (const section of targetSections) for (const subject of subjects.filter(s => s.programId === section.programId && s.yearId === section.yearId)) {
+  for (const section of targetSections) {
+    const mappedSubjects = sectionSubjects.filter(mapping => mapping.sectionId === section.id).map(mapping => mapping.subject);
+    const scheduledSubjects = mappedSubjects.length ? mappedSubjects : subjects.filter(s => s.programId === section.programId && s.yearId === section.yearId);
+    for (const subject of scheduledSubjects) {
     const teacher = mappings.find(m => m.subjectId === subject.id)?.facultyId;
     const room = context.rooms.find(r => r.capacity >= section.strength && (subject.type === "PRACTICAL" ? r.type === "LAB" : r.type === "CLASSROOM" || r.type === "LECTURE_THEATRE"));
     if (!teacher || !room) continue;
@@ -96,6 +100,7 @@ export async function generateHeuristicCandidate(semesterId: string, sectionIds?
       if (chosen) break;
       }
       if (chosen) sessions.push(chosen);
+    }
     }
   }
   return { sessions, validation: validateTimetable(context, [...existing, ...sessions], { checkCompleteness: true }) };
@@ -120,8 +125,18 @@ export async function applyCandidate(semesterId: string, candidates: TimetableSe
   return { applied: true, sessions: saved, validation };
 }
 
+export async function assessFeasibility(semesterId: string) {
+  const [sections, subjects, slots, mappings, rooms] = await Promise.all([prisma.section.findMany({ where: { semesterId }, include: { subjectMappings: { include: { subject: true } } } }), prisma.subject.findMany({ where: { semesterId } }), prisma.timeSlot.findMany({ where: { isTeaching: true } }), prisma.facultySubject.findMany({ where: { subject: { semesterId } } }), prisma.room.findMany()]);
+  const blockers: string[] = []; const totalRequiredHours = sections.reduce((total, section) => total + (section.subjectMappings.length ? section.subjectMappings.map(mapping => mapping.subject) : subjects.filter(subject => subject.programId === section.programId && subject.yearId === section.yearId)).reduce((hours, subject) => hours + subject.weeklyHours, 0), 0);
+  const weeklySectionCapacity = sections.length * slots.length; if (totalRequiredHours > weeklySectionCapacity) blockers.push(`Required teaching hours (${totalRequiredHours}) exceed configured section-slot capacity (${weeklySectionCapacity}).`);
+  for (const subject of subjects) { if (!mappings.some(mapping => mapping.subjectId === subject.id)) blockers.push(`${subject.code} has no mapped faculty member.`); if (subject.type === "PRACTICAL" && !rooms.some(room => room.type === "LAB")) blockers.push(`${subject.code} requires a lab, but no lab is configured.`); }
+  return { feasible: blockers.length === 0, totalRequiredHours, weeklySectionCapacity, blockers };
+}
+
 export async function restoreProject(backup: any) {
   if (backup?.version !== 1 || !Array.isArray(backup.academicYears)) throw new Error("Unsupported or invalid backup file.");
+  const required = ["programs", "years", "semesters", "sections", "subjects", "faculty", "rooms", "timeSlots", "sessions"];
+  if (required.some((key) => !Array.isArray(backup[key]))) throw new Error("Backup is missing one or more required project collections.");
   await prisma.$transaction(async (db) => {
     await db.timetableSessionSection.deleteMany(); await db.timetableSession.deleteMany(); await db.classCoordinator.deleteMany(); await db.facultySubject.deleteMany();
     await db.facultyAvailability.deleteMany(); await db.roomAvailability.deleteMany(); await db.timeSlot.deleteMany(); await db.section.deleteMany(); await db.subject.deleteMany();

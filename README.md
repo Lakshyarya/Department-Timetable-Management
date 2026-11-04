@@ -17,7 +17,7 @@ This repository is the foundation for the PRD-driven timetable platform. It is d
 3. Run `docker compose up -d database`.
 4. Run `pnpm install`, `pnpm db:generate`, then `pnpm db:migrate --name initial`.
 5. In one terminal run `pnpm --filter @dca/api dev`; in another run `pnpm --filter @dca/web dev`.
-6. Open `http://localhost:5173`. The API health endpoint is `http://localhost:4000/health`.
+6. Open `http://localhost:5173`. The API health endpoint is `http://localhost:4001/health`.
 
 To enable OpenAI generation, add `OPENAI_API_KEY` to `.env` and restart the API. Without it, the deterministic generator remains available.
 
@@ -37,3 +37,5 @@ To enable OpenAI generation, add `OPENAI_API_KEY` to `.env` and restart the API.
 - `POST /api/timetable/generate` returns a deterministic candidate schedule.
 - `GET /api/reports/validation?semesterId=<id>` returns current hard errors and weekly-hour status.
 - `GET /api/backup` and `POST /api/restore` provide project round-tripping. Restore replaces the current project data, so retain a backup before invoking it.
+
+The API applies JSON payload limits, basic security headers, and a per-client request rate limit. Configure `CORS_ORIGIN` explicitly for any deployed frontend.

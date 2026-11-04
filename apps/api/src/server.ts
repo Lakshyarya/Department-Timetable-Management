@@ -2,16 +2,21 @@ import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express from "express";
-import { importFacultySubjects } from "./imports.js";
+import { importEntity, importFacultySubjects } from "./imports.js";
 import { csv, pdf, reportRows, xlsx } from "./exports.js";
 import { openAiCandidate } from "./ai.js";
+import { z } from "zod";
 
 dotenv.config({ path: fileURLToPath(new URL("../../../.env", import.meta.url)) });
-import { applyCandidate, generateHeuristicCandidate, projectBackup, prisma, restoreProject, validateSessionCandidate, type SessionInput } from "./timetable.js";
+import { applyCandidate, assessFeasibility, generateHeuristicCandidate, projectBackup, prisma, restoreProject, validateSessionCandidate, type SessionInput } from "./timetable.js";
 
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",") ?? true }));
 app.use(express.json({ limit: "1mb" }));
+app.disable("x-powered-by");
+app.use((_request, response, next) => { response.setHeader("X-Content-Type-Options", "nosniff"); response.setHeader("X-Frame-Options", "DENY"); response.setHeader("Referrer-Policy", "no-referrer"); next(); });
+const requestWindows = new Map<string, { started: number; count: number }>();
+app.use((request, response, next) => { const key = request.ip ?? "unknown"; const now = Date.now(); const current = requestWindows.get(key); const entry = !current || now - current.started > 60_000 ? { started: now, count: 1 } : { ...current, count: current.count + 1 }; requestWindows.set(key, entry); if (entry.count > 240) return response.status(429).json({ error: "Too many requests. Try again in a minute." }); next(); });
 
 app.get("/health", (_request, response) => {
   response.json({ status: "ok", service: "dca-timetable-api" });
@@ -19,6 +24,7 @@ app.get("/health", (_request, response) => {
 
 const asyncRoute = (handler: express.RequestHandler): express.RequestHandler => (request, response, next) =>
   Promise.resolve(handler(request, response, next)).catch(next);
+const sessionSchema = z.object({ semesterId: z.string().min(1), programId: z.string().min(1), yearId: z.string().min(1), day: z.enum(["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"]), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), subjectId: z.string().min(1), teacherId: z.string().min(1), roomId: z.string().min(1), sectionIds: z.array(z.string().min(1)).min(1), durationPeriods: z.number().int().positive(), isLocked: z.boolean().optional(), notes: z.string().max(1000).optional() });
 
 app.get("/api/academic-years", asyncRoute(async (_request, response) => response.json(await prisma.academicYear.findMany({ orderBy: { name: "desc" } }))));
 app.post("/api/academic-years", asyncRoute(async (request, response) => response.status(201).json(await prisma.academicYear.create({ data: { name: String(request.body.name) } }))));
@@ -49,6 +55,10 @@ app.post("/api/import/faculty-subjects", express.text({ type: ["text/csv", "text
   const csv = typeof request.body === "string" ? request.body : String(request.body.csv ?? "");
   response.json(await importFacultySubjects(semesterId, csv));
 }));
+app.post("/api/import/:entity", express.text({ type: ["text/csv", "text/plain"] }), asyncRoute(async (request, response) => {
+  const entity = String(request.params.entity); if (!(["rooms", "sections", "subjects"] as string[]).includes(entity)) return response.status(400).json({ error: "entity must be rooms, sections, or subjects" });
+  response.json(await importEntity(entity as "rooms" | "sections" | "subjects", String(request.body ?? "")));
+}));
 app.get("/api/rooms", asyncRoute(async (_request, response) => response.json(await prisma.room.findMany({ orderBy: { name: "asc" } }))));
 app.post("/api/rooms", asyncRoute(async (request, response) => response.status(201).json(await prisma.room.create({ data: { name: String(request.body.name), type: request.body.type, capacity: Number(request.body.capacity) } }))));
 app.put("/api/rooms/:id", asyncRoute(async (request, response) => response.json(await prisma.room.update({ where: { id: String(request.params.id) }, data: { name: String(request.body.name), type: request.body.type, capacity: Number(request.body.capacity) } }))));
@@ -64,6 +74,9 @@ app.put("/api/sections/:id", asyncRoute(async (request, response) => response.js
 app.delete("/api/sections/:id", asyncRoute(async (request, response) => { await prisma.section.delete({ where: { id: String(request.params.id) } }); response.status(204).end(); }));
 app.get("/api/sections/:id/coordinators", asyncRoute(async (request, response) => response.json(await prisma.classCoordinator.findMany({ where: { sectionId: String(request.params.id) }, include: { faculty: true } }))));
 app.post("/api/sections/:id/coordinators", asyncRoute(async (request, response) => response.status(201).json(await prisma.classCoordinator.upsert({ where: { sectionId_facultyId: { sectionId: String(request.params.id), facultyId: String(request.body.facultyId) } }, create: { sectionId: String(request.params.id), facultyId: String(request.body.facultyId), mobile: request.body.mobile || null }, update: { mobile: request.body.mobile || null } }))));
+app.get("/api/sections/:id/subjects", asyncRoute(async (request, response) => response.json(await prisma.sectionSubject.findMany({ where: { sectionId: String(request.params.id) }, include: { subject: true } }))));
+app.post("/api/sections/:id/subjects", asyncRoute(async (request, response) => response.status(201).json(await prisma.sectionSubject.upsert({ where: { sectionId_subjectId: { sectionId: String(request.params.id), subjectId: String(request.body.subjectId) } }, create: { sectionId: String(request.params.id), subjectId: String(request.body.subjectId) }, update: {} }))));
+app.delete("/api/sections/:id/subjects/:subjectId", asyncRoute(async (request, response) => { await prisma.sectionSubject.delete({ where: { sectionId_subjectId: { sectionId: String(request.params.id), subjectId: String(request.params.subjectId) } } }); response.status(204).end(); }));
 app.get("/api/time-slots", asyncRoute(async (_request, response) => response.json(await prisma.timeSlot.findMany({ orderBy: [{ day: "asc" }, { periodNumber: "asc" }] }))));
 app.post("/api/time-slots", asyncRoute(async (request, response) => response.status(201).json(await prisma.timeSlot.create({ data: { day: request.body.day, startTime: String(request.body.startTime), endTime: String(request.body.endTime), periodNumber: Number(request.body.periodNumber), isTeaching: Boolean(request.body.isTeaching) } }))));
 app.put("/api/time-slots/:id", asyncRoute(async (request, response) => response.json(await prisma.timeSlot.update({ where: { id: String(request.params.id) }, data: { day: request.body.day, startTime: String(request.body.startTime), endTime: String(request.body.endTime), periodNumber: Number(request.body.periodNumber), isTeaching: Boolean(request.body.isTeaching) } }))));
@@ -97,7 +110,7 @@ app.get("/api/timetable/context", asyncRoute(async (request, response) => {
 }));
 
 app.post("/api/timetable/validate", asyncRoute(async (request, response) => {
-  const result = await validateSessionCandidate(request.body as SessionInput);
+  const parsed = sessionSchema.safeParse(request.body); if (!parsed.success) return response.status(400).json({ error: "Invalid session payload", details: parsed.error.flatten() }); const result = await validateSessionCandidate(parsed.data as SessionInput);
   response.json(result);
 }));
 app.post("/api/timetable/generate", asyncRoute(async (request, response) => {
@@ -110,6 +123,7 @@ app.post("/api/timetable/apply-candidate", asyncRoute(async (request, response) 
   const semesterId = String(request.body.semesterId ?? ""); if (!semesterId || !Array.isArray(request.body.sessions)) return response.status(400).json({ error: "semesterId and sessions are required" });
   const result = await applyCandidate(semesterId, request.body.sessions); response.status(result.applied ? 201 : 422).json(result);
 }));
+app.get("/api/timetable/feasibility", asyncRoute(async (request, response) => { const semesterId = String(request.query.semesterId ?? ""); if (!semesterId) return response.status(400).json({ error: "semesterId is required" }); response.json(await assessFeasibility(semesterId)); }));
 app.get("/api/reports/validation", asyncRoute(async (request, response) => {
   const semesterId = String(request.query.semesterId ?? "");
   if (!semesterId) return response.status(400).json({ error: "semesterId is required" });
@@ -128,7 +142,14 @@ app.get("/api/reports/room-utilization", asyncRoute(async (request, response) =>
   for (const session of sessions) { const entry = totals.get(session.roomId) ?? { roomId: session.roomId, room: session.room.name, type: session.room.type, hours: 0, sessions: 0 }; entry.hours += (Number(session.endTime.slice(0, 2)) * 60 + Number(session.endTime.slice(3))) / 60 - (Number(session.startTime.slice(0, 2)) * 60 + Number(session.startTime.slice(3))) / 60; entry.sessions += 1; totals.set(session.roomId, entry); }
   response.json([...totals.values()].sort((a, b) => b.hours - a.hours));
 }));
+app.get("/api/reports/subject-hours", asyncRoute(async (request, response) => {
+  const semesterId = String(request.query.semesterId ?? ""); if (!semesterId) return response.status(400).json({ error: "semesterId is required" });
+  const [sections, subjects, sessions] = await Promise.all([prisma.section.findMany({ where: { semesterId }, include: { subjectMappings: { include: { subject: true } } } }), prisma.subject.findMany({ where: { semesterId } }), prisma.timetableSession.findMany({ where: { semesterId }, include: { sections: true } })]);
+  const result = sections.flatMap((section) => (section.subjectMappings.length ? section.subjectMappings.map(mapping => mapping.subject) : subjects.filter(subject => subject.programId === section.programId && subject.yearId === section.yearId)).map((subject) => { const scheduled = sessions.filter(session => session.subjectId === subject.id && session.sections.some(link => link.sectionId === section.id)).reduce((hours, session) => hours + (Number(session.endTime.slice(0, 2)) * 60 + Number(session.endTime.slice(3)) - Number(session.startTime.slice(0, 2)) * 60 - Number(session.startTime.slice(3))) / 60, 0); return { sectionId: section.id, section: section.name, subjectId: subject.id, subject: subject.name, code: subject.code, requiredHours: subject.weeklyHours, scheduledHours: scheduled, remainingHours: subject.weeklyHours - scheduled }; }));
+  response.json(result);
+}));
 app.get("/api/backup", asyncRoute(async (_request, response) => response.json(await projectBackup())));
+app.get("/api/backup/download", asyncRoute(async (_request, response) => { response.header("Content-Disposition", "attachment; filename=timetable-project.json").json(await projectBackup()); }));
 app.post("/api/restore", asyncRoute(async (request, response) => response.json(await restoreProject(request.body))));
 app.get("/api/dashboard", asyncRoute(async (request, response) => {
   const semesterId = request.query.semesterId ? String(request.query.semesterId) : undefined;
@@ -141,9 +162,11 @@ app.get("/api/search", asyncRoute(async (request, response) => {
   const [faculty, subjects, sections, rooms] = await Promise.all([prisma.faculty.findMany({ where: { name: where }, take: 15 }), prisma.subject.findMany({ where: { OR: [{ name: where }, { code: where }] }, take: 15 }), prisma.section.findMany({ where: { name: where }, take: 15 }), prisma.room.findMany({ where: { name: where }, take: 15 })]);
   response.json({ faculty, subjects, sections, rooms });
 }));
+app.get("/api/settings", asyncRoute(async (_request, response) => response.json(await prisma.applicationSetting.findMany({ orderBy: { key: "asc" } }))));
+app.put("/api/settings/:key", asyncRoute(async (request, response) => response.json(await prisma.applicationSetting.upsert({ where: { key: String(request.params.key) }, create: { key: String(request.params.key), value: request.body.value }, update: { value: request.body.value } }))));
 app.get("/api/export/:format", asyncRoute(async (request, response) => {
   const semesterId = String(request.query.semesterId ?? ""); if (!semesterId) return response.status(400).json({ error: "semesterId is required" });
-  const rows = await reportRows(semesterId); const format = String(request.params.format);
+  const rows = await reportRows(semesterId, { sectionId: request.query.sectionId ? String(request.query.sectionId) : undefined, facultyId: request.query.facultyId ? String(request.query.facultyId) : undefined, roomId: request.query.roomId ? String(request.query.roomId) : undefined }); const format = String(request.params.format);
   if (format === "csv") { response.header("Content-Disposition", "attachment; filename=master-timetable.csv").type("text/csv").send(csv(rows)); return; }
   if (format === "xlsx") { response.header("Content-Disposition", "attachment; filename=master-timetable.xlsx").type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").send(await xlsx(rows)); return; }
   if (format === "pdf") { response.header("Content-Disposition", "attachment; filename=master-timetable.pdf").type("application/pdf").send(await pdf(rows)); return; }
@@ -151,7 +174,7 @@ app.get("/api/export/:format", asyncRoute(async (request, response) => {
 }));
 
 app.post("/api/timetable/sessions", asyncRoute(async (request, response) => {
-  const input = request.body as SessionInput;
+  const parsed = sessionSchema.safeParse(request.body); if (!parsed.success) return response.status(400).json({ error: "Invalid session payload", details: parsed.error.flatten() }); const input = parsed.data as SessionInput;
   const validation = await validateSessionCandidate(input);
   if (!validation.valid) return response.status(422).json(validation);
   const session = await prisma.timetableSession.create({
@@ -163,7 +186,7 @@ app.post("/api/timetable/sessions", asyncRoute(async (request, response) => {
 
 app.put("/api/timetable/sessions/:id", asyncRoute(async (request, response) => {
   const id = String(request.params.id);
-  const input = { ...(request.body as SessionInput), id };
+  const parsed = sessionSchema.safeParse(request.body); if (!parsed.success) return response.status(400).json({ error: "Invalid session payload", details: parsed.error.flatten() }); const input = { ...parsed.data as SessionInput, id };
   const validation = await validateSessionCandidate(input);
   if (!validation.valid) return response.status(422).json(validation);
   const session = await prisma.timetableSession.update({ where: { id }, data: { day: input.day, startTime: input.startTime, endTime: input.endTime, subjectId: input.subjectId, teacherId: input.teacherId, roomId: input.roomId, durationPeriods: input.durationPeriods, isLocked: input.isLocked ?? false, notes: input.notes ?? null, sections: { deleteMany: {}, create: input.sectionIds.map((sectionId) => ({ sectionId })) } }, include: { sections: true } });
@@ -180,5 +203,5 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
   response.status(500).json({ error: "Unexpected server error" });
 });
 
-const port = Number(process.env.PORT ?? 4000);
+const port = Number(process.env.PORT ?? 4001);
 app.listen(port, () => console.log(`DCA timetable API listening on port ${port}`));

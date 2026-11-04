@@ -2,8 +2,8 @@ import ExcelJS from "exceljs";
 import PDFDocument from "pdfkit";
 import { prisma } from "./timetable.js";
 
-export async function reportRows(semesterId: string) {
-  const sessions = await prisma.timetableSession.findMany({ where: { semesterId }, include: { subject: true, teacher: true, room: true, sections: { include: { section: true } } }, orderBy: [{ day: "asc" }, { startTime: "asc" }] });
+export async function reportRows(semesterId: string, filters: { sectionId?: string; facultyId?: string; roomId?: string } = {}) {
+  const sessions = await prisma.timetableSession.findMany({ where: { semesterId, ...(filters.facultyId ? { teacherId: filters.facultyId } : {}), ...(filters.roomId ? { roomId: filters.roomId } : {}), ...(filters.sectionId ? { sections: { some: { sectionId: filters.sectionId } } } : {}) }, include: { subject: true, teacher: true, room: true, sections: { include: { section: true } } }, orderBy: [{ day: "asc" }, { startTime: "asc" }] });
   return sessions.map((session) => ({ Day: session.day, Start: session.startTime, End: session.endTime, Sections: session.sections.map((entry) => entry.section.name).join(", "), Subject: `${session.subject.code} — ${session.subject.name}`, Faculty: session.teacher.name, Room: session.room.name, Locked: session.isLocked ? "Yes" : "No" }));
 }
 export const csv = (rows: Record<string, string>[]) => {

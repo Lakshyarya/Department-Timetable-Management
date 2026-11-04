@@ -101,6 +101,7 @@ model Section {
   semester   Semester                  @relation(fields: [semesterId], references: [id], onDelete: Cascade)
   sessions   TimetableSessionSection[]
   coordinators ClassCoordinator[]
+  subjectMappings SectionSubject[]
 
   @@unique([semesterId, yearId, name])
 }
@@ -120,6 +121,7 @@ model Subject {
   semester        Semester           @relation(fields: [semesterId], references: [id], onDelete: Cascade)
   facultyMappings FacultySubject[]
   sessions        TimetableSession[]
+  sectionMappings SectionSubject[]
 
   @@unique([semesterId, code])
 }
@@ -153,6 +155,15 @@ model FacultySubject {
   subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
 
   @@id([facultyId, subjectId])
+}
+
+model SectionSubject {
+  sectionId String
+  subjectId String
+  section   Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([sectionId, subjectId])
 }
 
 model Room {
@@ -227,4 +238,10 @@ model TimetableSessionSection {
   section   Section          @relation(fields: [sectionId], references: [id], onDelete: Cascade)
 
   @@id([sessionId, sectionId])
+}
+
+model ApplicationSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
 }
