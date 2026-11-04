@@ -1,0 +1,230 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoomType {
+  CLASSROOM
+  LAB
+  LECTURE_THEATRE
+  SEMINAR_HALL
+  CONFERENCE_HALL
+  AUDITORIUM
+  WORKSHOP
+  OTHER
+}
+
+enum SubjectType {
+  THEORY
+  PRACTICAL
+  PROJECT
+  SEMINAR
+  VIVA
+  PBL
+  PLACEMENT
+  LIBRARY
+  TRAINING
+  OTHER
+}
+
+enum AvailabilityStatus {
+  AVAILABLE
+  UNAVAILABLE
+  PREFERRED
+  NOT_PREFERRED
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+model AcademicYear {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  semesters Semester[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model Semester {
+  id             String             @id @default(cuid())
+  name           String
+  academicYearId String
+  academicYear   AcademicYear       @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  sections       Section[]
+  subjects       Subject[]
+  sessions       TimetableSession[]
+
+  @@unique([academicYearId, name])
+}
+
+model Program {
+  id       String             @id @default(cuid())
+  name     String             @unique
+  sections Section[]
+  subjects Subject[]
+  sessions TimetableSession[]
+  years    Year[]
+}
+
+model Year {
+  id        String             @id @default(cuid())
+  name      String
+  programId String
+  program   Program            @relation(fields: [programId], references: [id], onDelete: Cascade)
+  sections  Section[]
+  subjects  Subject[]
+  sessions  TimetableSession[]
+
+  @@unique([programId, name])
+}
+
+model Section {
+  id         String                    @id @default(cuid())
+  name       String
+  strength   Int
+  programId  String
+  yearId     String
+  semesterId String
+  program    Program                   @relation(fields: [programId], references: [id], onDelete: Cascade)
+  year       Year                      @relation(fields: [yearId], references: [id], onDelete: Cascade)
+  semester   Semester                  @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  sessions   TimetableSessionSection[]
+  coordinators ClassCoordinator[]
+
+  @@unique([semesterId, yearId, name])
+}
+
+model Subject {
+  id              String             @id @default(cuid())
+  code            String
+  name            String
+  type            SubjectType
+  weeklyHours     Int
+  durationPeriods Int                @default(1)
+  programId       String
+  yearId          String
+  semesterId      String
+  program         Program            @relation(fields: [programId], references: [id], onDelete: Cascade)
+  year            Year               @relation(fields: [yearId], references: [id], onDelete: Cascade)
+  semester        Semester           @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  facultyMappings FacultySubject[]
+  sessions        TimetableSession[]
+
+  @@unique([semesterId, code])
+}
+
+model Faculty {
+  id           String                @id @default(cuid())
+  name         String
+  shortName    String?
+  email        String?
+  mappings     FacultySubject[]
+  availability FacultyAvailability[]
+  sessions     TimetableSession[]
+  coordinatorAssignments ClassCoordinator[]
+}
+
+model ClassCoordinator {
+  id        String  @id @default(cuid())
+  sectionId String
+  facultyId String
+  mobile    String?
+  section   Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  faculty   Faculty @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+
+  @@unique([sectionId, facultyId])
+}
+
+model FacultySubject {
+  facultyId String
+  subjectId String
+  faculty   Faculty @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([facultyId, subjectId])
+}
+
+model Room {
+  id           String             @id @default(cuid())
+  name         String             @unique
+  type         RoomType
+  capacity     Int
+  availability RoomAvailability[]
+  sessions     TimetableSession[]
+}
+
+model TimeSlot {
+  id           String    @id @default(cuid())
+  day          DayOfWeek
+  startTime    String
+  endTime      String
+  periodNumber Int
+  isTeaching   Boolean   @default(true)
+
+  @@unique([day, periodNumber])
+}
+
+model FacultyAvailability {
+  id        String             @id @default(cuid())
+  facultyId String
+  faculty   Faculty            @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+  day       DayOfWeek
+  startTime String
+  endTime   String
+  status    AvailabilityStatus
+}
+
+model RoomAvailability {
+  id        String             @id @default(cuid())
+  roomId    String
+  room      Room               @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  day       DayOfWeek
+  startTime String
+  endTime   String
+  status    AvailabilityStatus
+}
+
+model TimetableSession {
+  id              String                    @id @default(cuid())
+  semesterId      String
+  programId       String
+  yearId          String
+  day             DayOfWeek
+  startTime       String
+  endTime         String
+  subjectId       String
+  teacherId       String
+  roomId          String
+  durationPeriods Int
+  isLocked        Boolean                   @default(false)
+  notes           String?
+  semester        Semester                  @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+  program         Program                   @relation(fields: [programId], references: [id], onDelete: Cascade)
+  year            Year                      @relation(fields: [yearId], references: [id], onDelete: Cascade)
+  subject         Subject                   @relation(fields: [subjectId], references: [id])
+  teacher         Faculty                   @relation(fields: [teacherId], references: [id])
+  room            Room                      @relation(fields: [roomId], references: [id])
+  sections        TimetableSessionSection[]
+
+  @@index([semesterId, day, startTime])
+}
+
+model TimetableSessionSection {
+  sessionId String
+  sectionId String
+  session   TimetableSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  section   Section          @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@id([sessionId, sectionId])
+}

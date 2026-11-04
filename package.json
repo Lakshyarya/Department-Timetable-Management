@@ -1,0 +1,17 @@
+{
+  "name": "dca-timetable-management-system",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @dca/api --filter @dca/web dev",
+    "build": "pnpm -r build",
+    "test": "pnpm --filter @dca/validator test",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @dca/api prisma:generate",
+    "db:migrate": "pnpm --filter @dca/api prisma:migrate"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
