@@ -11,7 +11,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/api ./apps/api
+COPY --from=build /app/apps/web ./apps/web
 COPY --from=build /app/packages ./packages
-EXPOSE 4000
+EXPOSE 4001
 CMD ["node", "apps/api/dist/server.js"]
 

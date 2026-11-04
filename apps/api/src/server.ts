@@ -1,11 +1,13 @@
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import cors from "cors";
 import express from "express";
 import { importEntity, importFacultySubjects } from "./imports.js";
 import { csv, pdf, reportRows, xlsx } from "./exports.js";
 import { openAiCandidate } from "./ai.js";
 import { z } from "zod";
+import { authenticate, hashPassword, signToken, verifyPassword } from "./auth.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../../../.env", import.meta.url)) });
 import { applyCandidate, assessFeasibility, generateHeuristicCandidate, projectBackup, prisma, restoreProject, validateSessionCandidate, type SessionInput } from "./timetable.js";
@@ -17,6 +19,8 @@ app.disable("x-powered-by");
 app.use((_request, response, next) => { response.setHeader("X-Content-Type-Options", "nosniff"); response.setHeader("X-Frame-Options", "DENY"); response.setHeader("Referrer-Policy", "no-referrer"); next(); });
 const requestWindows = new Map<string, { started: number; count: number }>();
 app.use((request, response, next) => { const key = request.ip ?? "unknown"; const now = Date.now(); const current = requestWindows.get(key); const entry = !current || now - current.started > 60_000 ? { started: now, count: 1 } : { ...current, count: current.count + 1 }; requestWindows.set(key, entry); if (entry.count > 240) return response.status(429).json({ error: "Too many requests. Try again in a minute." }); next(); });
+const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
+app.use(express.static(webDist));
 
 app.get("/health", (_request, response) => {
   response.json({ status: "ok", service: "dca-timetable-api" });
@@ -25,6 +29,11 @@ app.get("/health", (_request, response) => {
 const asyncRoute = (handler: express.RequestHandler): express.RequestHandler => (request, response, next) =>
   Promise.resolve(handler(request, response, next)).catch(next);
 const sessionSchema = z.object({ semesterId: z.string().min(1), programId: z.string().min(1), yearId: z.string().min(1), day: z.enum(["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"]), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), subjectId: z.string().min(1), teacherId: z.string().min(1), roomId: z.string().min(1), sectionIds: z.array(z.string().min(1)).min(1), durationPeriods: z.number().int().positive(), isLocked: z.boolean().optional(), notes: z.string().max(1000).optional() });
+
+const credentialsSchema = z.object({ name: z.string().min(2).max(120).optional(), email: z.string().email(), password: z.string().min(10).max(200), role: z.enum(["ADMIN", "COORDINATOR", "FACULTY"]).optional() });
+app.post("/api/auth/bootstrap", asyncRoute(async (request, response) => { const input = credentialsSchema.parse(request.body); if (await prisma.user.count()) return response.status(409).json({ error: "An administrator already exists." }); const user = await prisma.user.create({ data: { name: input.name ?? "Administrator", email: input.email.toLowerCase(), passwordHash: await hashPassword(input.password), role: "ADMIN" } }); response.status(201).json({ token: signToken(user), user: { id: user.id, name: user.name, email: user.email, role: user.role } }); }));
+app.post("/api/auth/login", asyncRoute(async (request, response) => { const input = credentialsSchema.pick({ email: true, password: true }).parse(request.body); const user = await prisma.user.findUnique({ where: { email: input.email.toLowerCase() } }); if (!user?.isActive || !(await verifyPassword(input.password, user.passwordHash))) return response.status(401).json({ error: "Invalid email or password." }); response.json({ token: signToken(user), user: { id: user.id, name: user.name, email: user.email, role: user.role } }); }));
+app.use("/api", authenticate);
 
 app.get("/api/academic-years", asyncRoute(async (_request, response) => response.json(await prisma.academicYear.findMany({ orderBy: { name: "desc" } }))));
 app.post("/api/academic-years", asyncRoute(async (request, response) => response.status(201).json(await prisma.academicYear.create({ data: { name: String(request.body.name) } }))));
@@ -202,6 +211,7 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
   console.error(error);
   response.status(500).json({ error: "Unexpected server error" });
 });
+app.get("*", (_request, response) => response.sendFile(path.join(webDist, "index.html")));
 
 const port = Number(process.env.PORT ?? 4001);
 app.listen(port, () => console.log(`DCA timetable API listening on port ${port}`));

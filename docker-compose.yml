@@ -18,10 +18,10 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql://dca:change-this-before-production@database:5432/dca_timetable?schema=public
-      PORT: 4000
-      CORS_ORIGIN: http://localhost:5173
+      PORT: 4001
+      AUTH_SECRET: ${AUTH_SECRET:?Set a long random AUTH_SECRET in .env before production}
     ports:
-      - "4000:4000"
+      - "4002:4001"
     depends_on:
       database:
         condition: service_healthy

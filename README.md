@@ -19,6 +19,8 @@ This repository is the foundation for the PRD-driven timetable platform. It is d
 5. In one terminal run `pnpm --filter @dca/api dev`; in another run `pnpm --filter @dca/web dev`.
 6. Open `http://localhost:5173`. The API health endpoint is `http://localhost:4001/health`.
 
+For the production-style Docker deployment, run `docker compose up -d`; then open `http://localhost:4002` (the API and built web interface are served together).
+
 To enable OpenAI generation, add `OPENAI_API_KEY` to `.env` and restart the API. Without it, the deterministic generator remains available.
 
 ## Implemented workflows
