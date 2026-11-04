@@ -2,7 +2,8 @@ import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-const api = import.meta.env.VITE_API_URL ?? "http://localhost:4001";
+// Vite development uses the standalone API; the production Docker image serves UI and API from one origin.
+const api = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? "http://localhost:4001" : "");
 type Resource = "academic-years" | "programs" | "years" | "semesters" | "faculty" | "rooms" | "subjects" | "sections" | "time-slots";
 type Item = Record<string, any> & { id: string };
 const resources: Record<Resource, { title: string; fields: string[] }> = {
